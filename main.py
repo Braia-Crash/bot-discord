@@ -7,7 +7,7 @@ import os
 # ================== CONFIGURAÇÕES ==================
 TOKEN = os.getenv("DISCORD_TOKEN")
 STAFF_ROLE_ID = 1467027947847417939
-TICKET_CATEGORY_ID = 11466945652163612734
+TICKET_CATEGORY_ID = 1466940995953229916
 MAX_JOGADORES = 2
 ARQUIVO_JSON = "painels.json"
 
@@ -38,7 +38,12 @@ class PainelModal(discord.ui.Modal, title="Criar Painel"):
 
     async def on_submit(self, interaction: discord.Interaction):
         painel_id = str(uuid.uuid4())
-        painels[painel_id] = {"jogadores": []}
+        painels[painel_id] = {
+            "titulo": self.titulo.value,
+            "modo": self.texto1.value,
+            "valor": self.texto2.value,
+            "jogadores": []
+        }
         salvar_painels()
 
         embed = discord.Embed(
@@ -66,6 +71,15 @@ class TicketView(discord.ui.View):
     async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         painel = painels[self.painel_id]
 
+        staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+        mediadores_online = [m for m in staff_role.members if m.status != discord.Status.offline]
+
+        if not mediadores_online:
+            return await interaction.response.send_message(
+                "❌ Mediadores off-line, tente novamente mais tarde.",
+                ephemeral=True
+            )
+
         if interaction.user.id in usuarios_em_ticket:
             return await interaction.response.send_message(
                 "❌ Você já está em um ticket ativo.",
@@ -79,15 +93,18 @@ class TicketView(discord.ui.View):
         usuarios_em_ticket.add(interaction.user.id)
         salvar_painels()
 
-        embed = interaction.message.embeds[0]
-        embed.set_field_at(
-            2,
-            name="Jogadores",
-            value="\n".join(f"<@{uid}>" for uid in painel["jogadores"]),
+        # Cria novo embed
+        embed = discord.Embed(title=painel["titulo"], color=discord.Color.from_rgb(255, 0, 0))
+        embed.add_field(name="Modo:", value=painel["modo"], inline=False)
+        embed.add_field(name="Valor:", value=painel["valor"], inline=False)
+        embed.add_field(
+            name="Jogadores:",
+            value="\n".join(f"<@{uid}>" for uid in painel["jogadores"]) or "Nenhum jogador na fila.",
             inline=False
         )
+
         await interaction.message.edit(embed=embed)
-        await interaction.response.send_message("✅ Você entrou!", ephemeral=True)
+        await interaction.response.defer()
 
         if len(painel["jogadores"]) == MAX_JOGADORES:
             await criar_canal_ticket(interaction.guild, painel)
@@ -95,7 +112,10 @@ class TicketView(discord.ui.View):
             painel["jogadores"].clear()
             salvar_painels()
 
-            embed.set_field_at(2, name="Jogadores", value="Nenhum jogador na fila.", inline=False)
+            embed = discord.Embed(title=painel["titulo"], color=discord.Color.from_rgb(255, 0, 0))
+            embed.add_field(name="Modo:", value=painel["modo"], inline=False)
+            embed.add_field(name="Valor:", value=painel["valor"], inline=False)
+            embed.add_field(name="Jogadores:", value="Nenhum jogador na fila.", inline=False)
             await interaction.message.edit(embed=embed)
 
     @discord.ui.button(
@@ -116,16 +136,28 @@ class TicketView(discord.ui.View):
         usuarios_em_ticket.discard(interaction.user.id)
         salvar_painels()
 
-        embed = interaction.message.embeds[0]
-        valor = "\n".join(f"<@{uid}>" for uid in painel["jogadores"]) or "Nenhum jogador na fila."
-        embed.set_field_at(2, name="Jogadores", value=valor, inline=False)
+    # Cria novo embed
+        embed = discord.Embed(title=painel["titulo"], color=discord.Color.from_rgb(255, 0, 0))
+        embed.add_field(name="Modo:", value=painel["modo"], inline=False)
+        embed.add_field(name="Valor:", value=painel["valor"], inline=False)
+        embed.add_field(
+            name="Jogadores:",
+            value="\n".join(f"<@{uid}>" for uid in painel["jogadores"]) or "Nenhum jogador na fila.",
+            inline=False
+        )
         await interaction.message.edit(embed=embed)
-
-        await interaction.response.send_message("❌ Você saiu.", ephemeral=True)
+        await interaction.response.defer()
 
 # ================== VIEW FECHAR ==================
 class FecharTicketView(discord.ui.View):
-    @discord.ui.button(label="Finalizar Ticket", style=discord.ButtonStyle.red)
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Finalizar Ticket",
+        style=discord.ButtonStyle.red,
+        custom_id="fechar_ticket"
+    )
     async def fechar(self, interaction: discord.Interaction, button: discord.ui.Button):
         if STAFF_ROLE_ID not in [r.id for r in interaction.user.roles]:
             return await interaction.response.send_message(
@@ -161,8 +193,32 @@ async def criar_canal_ticket(guild, painel):
 
     mencoes = " ".join(f"<@{uid}>" for uid in painel["jogadores"])
 
+    embed = discord.Embed(
+        title="Aposta criada!",
+        color=discord.Color.from_rgb(255, 0, 0)
+    )
+
+    embed.add_field(
+        name="Modo",
+        value=painel["modo"],
+        inline=False
+    )
+
+    embed.add_field(
+        name="Valor",
+        value=painel["valor"],
+        inline=False
+    )
+
+    embed.add_field(
+        name="Jogadores",
+        value="\n".join(f"<@{uid}>" for uid in painel["jogadores"]),
+        inline=False
+    )
+
     await channel.send(
-        f"🎮 **Ticket criado!**\n{mencoes}",
+        content=f"{mencoes} {staff_role.mention}",
+        embed=embed,
         view=FecharTicketView()
     )
 
@@ -180,6 +236,8 @@ async def on_ready():
 
     for painel_id in painels.keys():
         bot.add_view(TicketView(painel_id))
+
+    bot.add_view(FecharTicketView())
 
     await bot.tree.sync()
     print(f"✅ Bot online: {bot.user}")
